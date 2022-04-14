@@ -3,7 +3,9 @@
 # 直接使用
 ```shell
 docker run --name office2pdf -p 3000:3000 -d jetereting/office2pdf
-curl http://localhost:3000/convert?fileSrc=FILE_SRC
+
+# 通过 get 转化远程文档：http://localhost:3000/convert?fileSrc=FILE_SRC
+# 通过 post 直接转化本地：http://localhost:3000/convert 上传文件
 ```
 
 # 修改

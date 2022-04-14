@@ -4,6 +4,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -12,7 +13,7 @@ import (
 	"time"
 )
 
-var channel = make(chan int, 10)
+var channel = make(chan int, 1)
 
 func main() {
 	channel <- 1
@@ -48,40 +49,61 @@ func downloadFile(path string, url string) error {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-	keys, ok := r.URL.Query()["fileSrc"]
+	keys, ok := r.URL.Query()["originFile"]
 
+	isFileFlag := false
+	originFile := ""
+	var partFile *multipart.Part
 	if !ok || len(keys[0]) < 1 {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte("fileSrc Param 'key' is missing"))
-		return
+		isFileFlag = true
+	}
+	if isFileFlag {
+		reader, err := r.MultipartReader()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		part, err := reader.NextPart()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		partFile = part
+		originFile = part.FileName()
+	}
+	if !isFileFlag {
+		originFile = keys[0]
 	}
 
-	fileSrc := keys[0]
-
-	log.Println("request incoming with fileSrc:", fileSrc)
+	log.Println("request incoming with originFile:", originFile)
 
 	workDir := os.TempDir()
 
-	fileName := strings.TrimSuffix(filepath.Base(fileSrc), filepath.Ext(fileSrc)) + time.Now().Format("060102150405")
+	<-channel
+	defer func() {
+		channel <- 1
+	}()
+	newFileName := strings.TrimSuffix(filepath.Base(originFile), filepath.Ext(originFile)) + time.Now().Format("060102150405")
+	serverFile := filepath.Join(workDir, newFileName)
+	outputFile := filepath.Join(workDir, newFileName+".pdf")
 
-	inputFile := filepath.Join(workDir, fileName)
-
-	outputFile := filepath.Join(workDir, fileName+".pdf")
-
-	errorDownload := downloadFile(inputFile, fileSrc)
-	log.Println("下载耗时(秒):", time.Now().Sub(startTime).Seconds())
-
-	if errorDownload != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte("error when download file"))
-		return
+	if isFileFlag {
+		f, _ := os.Create(serverFile)
+		_, _ = io.Copy(f, partFile)
+	} else {
+		// 如果是文件网址，则下载文件
+		errorDownload := downloadFile(serverFile, originFile)
+		if errorDownload != nil {
+			log.Println("下载失败:", errorDownload)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("下载失败"))
+			return
+		}
+		log.Println("下载耗时(秒):", time.Now().Sub(startTime).Seconds())
 	}
 
-	<-channel
-	cmd := exec.Command("libreoffice", "--headless", "--convert-to", "pdf:writer_pdf_Export", inputFile, "--outdir", workDir)
+	cmd := exec.Command("libreoffice", "--headless", "--convert-to", "pdf:writer_pdf_Export", serverFile, "--outdir", workDir)
 	_, err := cmd.Output()
-	channel <- 1
-
 	if err != nil {
 		log.Println("cmd err:", err.Error())
 		w.WriteHeader(http.StatusBadRequest)
@@ -106,7 +128,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = os.Remove(outputFile)
-	_ = os.Remove(inputFile)
+	_ = os.Remove(serverFile)
 
 	log.Println("总耗时(秒):", time.Now().Sub(startTime).Seconds())
 
